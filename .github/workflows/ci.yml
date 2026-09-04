@@ -43,3 +43,55 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+  # Builds the image, stands up a real cluster, installs the chart and drives
+  # the running service. A linted manifest proves nothing about whether the
+  # thing starts.
+  kubernetes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -f deploy/Dockerfile -t sqlguard:dev --build-arg VERSION=ci .
+
+      - name: Image runs and is non-root
+        run: |
+          docker run --rm sqlguard:dev version
+          test "$(docker inspect --format '{{.Config.User}}' sqlguard:dev)" = "65532:65532"
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Lint and render the chart
+        run: |
+          helm lint chart/
+          helm template sqlguard chart/ > /dev/null
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: sqlguard
+
+      - name: Load the image into the cluster
+        run: kind load docker-image sqlguard:dev --name sqlguard
+
+      - name: Install the chart
+        run: helm install sqlguard ./chart --wait --timeout 5m
+
+      # Probes answer, a read runs, a write is refused. Exits non-zero if not.
+      - name: Verify the running deployment
+        run: ./deploy/verify.sh
+
+      - name: The approval boundary needs cluster access, not a tool call
+        run: |
+          kubectl exec deploy/sqlguard -c sqlguard -- \
+            /usr/local/bin/sqlguard pending --approvals /data/approvals
+
+      - name: Show what happened if anything failed
+        if: failure()
+        run: |
+          kubectl get pods -o wide || true
+          kubectl describe deploy/sqlguard || true
+          kubectl logs deploy/sqlguard -c seed --tail=50 || true
+          kubectl logs deploy/sqlguard -c sqlguard --tail=50 || true
