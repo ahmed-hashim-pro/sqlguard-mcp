@@ -1,0 +1,21 @@
+# The database, the approval store and the audit log all live here.
+#
+# A PersistentVolumeClaim rather than an emptyDir because all three must survive
+# a pod restart: an approval granted seconds before a rolling update should
+# still be redeemable afterwards, and an audit log that vanishes with the pod is
+# not an audit log.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sqlguard-data
+  labels:
+    app.kubernetes.io/name: sqlguard
+spec:
+  accessModes:
+    # SQLite is a single-writer file. ReadWriteOnce is not a limitation being
+    # worked around here, it is the correct mode: two pods writing this file
+    # over a shared volume would corrupt it. See replicas in deployment.yaml.
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

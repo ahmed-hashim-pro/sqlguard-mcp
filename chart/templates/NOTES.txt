@@ -1,0 +1,16 @@
+sqlguard is running. Reads execute; writes wait for a human.
+
+  kubectl port-forward svc/{{ include "sqlguard.fullname" . }} 8080:{{ .Values.service.port }}
+
+The MCP endpoint is then at http://127.0.0.1:8080/mcp
+
+When an agent asks for a write it gets a token. Approving it needs access to
+the cluster, not a tool call:
+
+  kubectl exec deploy/{{ include "sqlguard.fullname" . }} -c sqlguard -- \
+    /usr/local/bin/sqlguard approve <token> --approvals /data/approvals
+
+See what is waiting:
+
+  kubectl exec deploy/{{ include "sqlguard.fullname" . }} -c sqlguard -- \
+    /usr/local/bin/sqlguard pending --approvals /data/approvals

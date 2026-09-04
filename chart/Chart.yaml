@@ -1,0 +1,12 @@
+apiVersion: v2
+name: sqlguard
+description: A governed SQL gateway for LLM agents, with an approval boundary that requires cluster access.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/ahmed-hashim-pro/sqlguard-mcp
+sources:
+  - https://github.com/ahmed-hashim-pro/sqlguard-mcp
+keywords: [mcp, sql, sqlite, llm, agents, governance]
+maintainers:
+  - name: Ahmed Hashim
