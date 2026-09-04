@@ -57,6 +57,16 @@ func Open(path string) (*DB, error) {
 	return &DB{read: read, write: write}, nil
 }
 
+// Ping checks the database is still reachable. Readiness probes call this, so
+// a pod whose volume has gone away stops receiving traffic instead of failing
+// every request it is handed.
+func (d *DB) Ping(ctx context.Context) error {
+	if err := d.read.PingContext(ctx); err != nil {
+		return fmt.Errorf("read connection: %w", err)
+	}
+	return nil
+}
+
 func (d *DB) Close() error {
 	err := d.read.Close()
 	if writeErr := d.write.Close(); err == nil {
