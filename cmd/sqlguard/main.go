@@ -36,10 +36,10 @@ var sampleSQL string
 const usage = `sqlguard - a governed SQL gateway for LLM agents
 
 usage:
-  sqlguard serve   --db <path> [flags]   run the MCP server over stdio
+  sqlguard serve   --db <path> [flags]   run the MCP server (stdio, or --http :8080)
   sqlguard approve <token> [flags]       approve one pending write
   sqlguard pending [flags]               list writes awaiting a decision
-  sqlguard seed    <path>                write the sample database
+  sqlguard seed    <path> [--if-missing] write the sample database
   sqlguard version
 
 Reads run immediately under a row cap. Writes are refused until a human
@@ -121,6 +121,7 @@ func runServe(args []string) error {
 	maxRows := fs.Int("max-rows", 500, "maximum rows returned by one query")
 	timeout := fs.Duration("timeout", 30*time.Second, "per-statement timeout")
 	ttl := fs.Duration("approval-ttl", 5*time.Minute, "how long an approval stays valid")
+	httpAddr := fs.String("http", "", "serve MCP over HTTP on this address (e.g. :8080) instead of stdio")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -157,15 +158,28 @@ func runServe(args []string) error {
 	server := mcp.NewServer(&mcp.Implementation{Name: "sqlguard", Version: version}, nil)
 	guard.Register(server)
 
-	// stdout is the protocol channel, so every human-facing message goes to
-	// stderr. Anything printed to stdout would corrupt the JSON-RPC stream.
-	fmt.Fprintf(os.Stderr, "sqlguard %s serving %s (approvals in %s, audit to %s)\n",
-		version, *dbPath, *approvalsDir, *auditPath)
+	// stdout is the protocol channel in stdio mode, so every human-facing
+	// message goes to stderr. Anything printed to stdout would corrupt the
+	// JSON-RPC stream.
+	transport := "stdio"
+	if *httpAddr != "" {
+		transport = "http " + *httpAddr
+	}
+	fmt.Fprintf(os.Stderr, "sqlguard %s serving %s over %s (approvals in %s, audit to %s)\n",
+		version, *dbPath, transport, *approvalsDir, *auditPath)
 
-	// Ctrl-C cancels the context, which unwinds Run and closes the deferred
-	// handles above rather than killing the process mid-write.
+	// SIGTERM is what Kubernetes sends before it kills a pod; cancelling the
+	// context unwinds the server and runs the deferred closes above rather than
+	// dying mid-write.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if *httpAddr != "" {
+		if err := serveHTTP(ctx, *httpAddr, newHTTPMux(server, database)); err != nil {
+			return fmt.Errorf("serve http: %w", err)
+		}
+		return nil
+	}
 
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("serve: %w", err)
@@ -233,12 +247,18 @@ func runPending(args []string) error {
 func runSeed(args []string) error {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
 	force := fs.Bool("force", false, "overwrite the file if it already exists")
+	ifMissing := fs.Bool("if-missing", false, "succeed without doing anything if the file already exists")
 	path, err := parsePositional(fs, args, "path\n\nusage: sqlguard seed <path> [--force]")
 	if err != nil {
 		return err
 	}
 
-	if _, err := os.Stat(path); err == nil && !*force {
+	if _, err := os.Stat(path); err == nil && *ifMissing {
+		// Idempotent, for an init container that runs on every pod start. The
+		// image has no shell, so the "only if absent" test has to live here.
+		fmt.Printf("%s already exists, leaving it alone\n", path)
+		return nil
+	} else if err == nil && !*force {
 		return fmt.Errorf("%s already exists; pass --force to replace it", path)
 	} else if err == nil {
 		if err := os.Remove(path); err != nil {
