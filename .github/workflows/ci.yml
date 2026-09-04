@@ -76,6 +76,11 @@ jobs:
       - name: Load the image into the cluster
         run: kind load docker-image sqlguard:dev --name sqlguard
 
+      # The plain manifests are the readable reference in the README, so they
+      # must stay applyable even though the chart is what gets installed.
+      - name: The reference manifests are still valid
+        run: kubectl apply --dry-run=server -f deploy/k8s/
+
       - name: Install the chart
         run: helm install sqlguard ./chart --wait --timeout 5m
 
