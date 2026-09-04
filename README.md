@@ -206,6 +206,98 @@ The suite is layered deliberately:
 - `cmd/sqlguard` builds the binary, starts it as a subprocess, and drives the
   whole refuse → request → approve → execute → reuse cycle over stdio.
 
+## Running it on Kubernetes
+
+Deployed, the approval boundary gets stronger rather than just moving: granting
+one requires credentials for the cluster, not access to a file. An agent that
+reaches the MCP endpoint over the network still cannot approve its own write,
+because approving happens in a process it has no way to start.
+
+```bash
+make deploy        # build the image, create a kind cluster, install the chart
+make k8s-verify    # probes answer, a read runs, a write is refused
+```
+
+`make deploy` needs Docker, `kind`, `kubectl` and `helm`. It is idempotent.
+
+```bash
+kubectl port-forward svc/sqlguard 8080:8080
+# MCP is then at http://127.0.0.1:8080/mcp
+```
+
+When the agent asks for a write it gets a token, and this is how it is granted:
+
+```bash
+kubectl exec deploy/sqlguard -c sqlguard -- \
+  /usr/local/bin/sqlguard pending --approvals /data/approvals
+
+kubectl exec deploy/sqlguard -c sqlguard -- \
+  /usr/local/bin/sqlguard approve <token> --approvals /data/approvals
+```
+
+Tear down with `make undeploy`, or `make kind-down` for the whole cluster.
+
+### What is in here, and why
+
+```
+deploy/Dockerfile     multi-stage build -> distroless, non-root, no shell
+deploy/k8s/           plain manifests, for reading
+deploy/verify.sh      drives a running deployment; used by make and by CI
+chart/                the same thing parameterised, and what you install
+```
+
+Both the plain manifests and the chart are kept: the manifests are the readable
+reference, the chart is what `make deploy` installs. CI renders and deploys the
+chart, so that is the one proven to work.
+
+**The image is 60 MB and has no shell.** `CGO_ENABLED=0` makes that possible —
+the SQLite driver is pure Go, so the binary needs no libc and the final stage
+can be `distroless`. A process compromised in this container has nothing to
+spawn.
+
+**Liveness and readiness are different questions**, and conflating them is the
+mistake worth avoiding:
+
+| | asks | points at |
+| --- | --- | --- |
+| `livenessProbe` | is this process wedged, should I restart it | `/healthz`, which never touches the database |
+| `readinessProbe` | can this pod serve traffic right now | `/readyz`, which pings the database |
+
+If liveness checked the database, a volume blip would restart a healthy pod and
+turn a brief outage into a crash loop. If readiness did not, a pod that had lost
+its volume would stay in the Service's endpoints and fail every request handed
+to it. There is a test for each.
+
+**Replicas are pinned at 1, and that is not a placeholder.** SQLite is a
+single-writer file on a `ReadWriteOnce` volume; a second replica would fail to
+attach rather than share load. For the same reason the update strategy is
+`Recreate` — a rolling update would briefly want two pods on one RWO volume.
+Scaling this out is a storage-engine change, not a replica-count change.
+
+**The init container is idempotent** because it runs on every pod start. The
+image has no shell, so "seed only if the database is absent" cannot be a test in
+the manifest; it is `sqlguard seed --if-missing`, with a test asserting a second
+run leaves an existing file untouched.
+
+**Requests and limits do different jobs.** Requests are what the scheduler packs
+against; limits are what the kernel enforces. Memory limit equals memory request
+here, which puts the pod in Guaranteed QoS so it is not first to be evicted when
+the node is under pressure.
+
+**The Service is `ClusterIP`.** Reachable from inside the cluster only —
+exposing a database gateway to the internet would undo the point of the
+approval boundary.
+
+### What this deployment does not do
+
+- **No authentication on the MCP endpoint.** Anything that can reach the Service
+  can issue reads. In a real cluster that belongs behind a NetworkPolicy and an
+  authenticating proxy; the approval boundary protects writes, not reads.
+- **No TLS.** Terminate it at an ingress or a mesh.
+- **Single node, single writer.** See the replicas note above.
+- **The PVC is deleted by `make undeploy`.** Convenient for a demo, wrong for
+  anything real.
+
 ## Design decisions
 
 The questions this repo should be able to answer.
