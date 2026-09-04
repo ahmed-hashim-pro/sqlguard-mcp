@@ -281,3 +281,38 @@ func TestSplitSQLYieldsEveryStatement(t *testing.T) {
 		}
 	}
 }
+
+// An init container runs on every pod start, so seeding has to be idempotent.
+// The image is distroless and has no shell, so the "only if absent" test cannot
+// live in the manifest — it lives here.
+func TestSeedIfMissingIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shop.db")
+
+	if err := run([]string{"seed", path, "--if-missing"}); err != nil {
+		t.Fatalf("first seed --if-missing: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	if err := run([]string{"seed", path, "--if-missing"}); err != nil {
+		t.Errorf("second seed --if-missing: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Error("seed --if-missing rewrote an existing database")
+	}
+}
+
+func TestSeedWithoutIfMissingStillRefuses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shop.db")
+	run([]string{"seed", path})
+
+	if err := run([]string{"seed", path}); err == nil {
+		t.Error("plain seed over an existing file returned no error")
+	}
+}
