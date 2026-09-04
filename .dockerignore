@@ -1,0 +1,12 @@
+.git
+.github
+bin
+*.db
+*.db-shm
+*.db-wal
+audit.jsonl
+approvals
+deploy
+chart
+docs
+README.md
