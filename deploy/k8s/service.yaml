@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sqlguard
+  labels:
+    app.kubernetes.io/name: sqlguard
+spec:
+  # ClusterIP: reachable from inside the cluster only. Exposing a database
+  # gateway to the internet would undo the point of the approval boundary.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sqlguard
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sqlguard
+  labels:
+    app.kubernetes.io/name: sqlguard
+spec:
+  # Deliberately 1, and it cannot safely be raised: SQLite is a single-writer
+  # file on a ReadWriteOnce volume. Scaling this out means changing the storage
+  # engine, not the replica count.
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate: a rolling update would briefly run two pods
+    # against one ReadWriteOnce volume, and the new pod would fail to attach.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sqlguard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sqlguard
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # The volume is mounted root-owned by default; this makes it writable by
+        # the non-root user without granting that user anything else.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      initContainers:
+        # Runs on every pod start and does nothing when the database is already
+        # there. The image has no shell, so the "only if absent" check is a flag
+        # on the binary rather than a test in this manifest.
+        - name: seed
+          image: sqlguard:dev
+          imagePullPolicy: IfNotPresent
+          args: ["seed", "/data/shop.db", "--if-missing"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits:   { cpu: 500m, memory: 128Mi }
+
+      containers:
+        - name: sqlguard
+          image: sqlguard:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - "serve"
+            - "--db=/data/shop.db"
+            - "--http=:8080"
+            - "--approvals=/data/approvals"
+            - "--audit=/data/audit.jsonl"
+          ports:
+            - name: http
+              containerPort: 8080
+
+          # Liveness asks "is this process wedged" and must not touch the
+          # database: a volume blip would otherwise restart a healthy pod and
+          # turn a brief outage into a crash loop.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+
+          # Readiness asks "can this pod serve right now" and must, so a pod
+          # that cannot reach its data is removed from the Service's endpoints
+          # instead of being handed traffic it will fail.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+
+          # Startup probe gives a slow first start room without loosening the
+          # liveness thresholds that apply for the rest of the pod's life.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            failureThreshold: 30
+            periodSeconds: 2
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The binary is static and writes only to /data, so the rest of the
+            # filesystem can be read-only.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          resources:
+            # Requests are what the scheduler packs against; limits are what the
+            # kernel enforces. Memory limit == request so the pod is Guaranteed
+            # QoS and is not the first thing evicted under pressure.
+            requests: { cpu: 50m,  memory: 128Mi }
+            limits:   { cpu: 500m, memory: 128Mi }
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
+      # SIGTERM arrives first; the server drains in-flight requests. This is the
+      # window before SIGKILL.
+      terminationGracePeriodSeconds: 30
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: sqlguard-data

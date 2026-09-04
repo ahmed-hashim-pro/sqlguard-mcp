@@ -1,0 +1,43 @@
+# Override the generated resource names.
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: sqlguard
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# Not exposed as a value on purpose. SQLite is a single-writer file on a
+# ReadWriteOnce volume, so a second replica would fail to attach rather than
+# scale. Raising this needs a different storage engine, not a different number.
+# replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8080
+
+persistence:
+  enabled: true
+  size: 1Gi
+  # Leave null to use the cluster's default StorageClass.
+  storageClass: null
+
+server:
+  maxRows: 500
+  timeout: 30s
+  approvalTTL: 5m
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    # Equal to the request, so the pod gets Guaranteed QoS and is not the first
+    # thing evicted when the node is under memory pressure.
+    memory: 128Mi
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
