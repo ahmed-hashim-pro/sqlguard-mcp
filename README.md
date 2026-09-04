@@ -206,6 +206,83 @@ The suite is layered deliberately:
 - `cmd/sqlguard` builds the binary, starts it as a subprocess, and drives the
   whole refuse → request → approve → execute → reuse cycle over stdio.
 
+## Design decisions
+
+The questions this repo should be able to answer.
+
+### Why not use a real SQL parser?
+
+Three options were on the table. A hand-rolled regex — rejected, because the
+failure modes are unenumerable and it would have called the CTE above a read. A
+real parser — `pg_query_go` wraps the actual PostgreSQL parser and is the
+correct answer for PostgreSQL, but it needs cgo and it is one engine's grammar;
+`vitess`'s parser is MySQL's. Either would have made the classifier accurate for
+a database this server does not target, and cost the zero-setup install that
+makes the repo runnable from a clone.
+
+What is left is a conservative classifier, and the thing that makes it
+defensible is the direction it is wrong in. It refuses some legitimate reads —
+`SET timezone` is harmless and gets denied — and it never admits a write it
+cannot see. A parser is wrong in the other direction whenever the grammar it
+implements is not the grammar the engine runs.
+
+The tradeoff is stated rather than hidden: if this ever targets PostgreSQL
+seriously, the classifier should become a `pg_query` front end with this one as
+the fallback for anything it fails to parse.
+
+### Why three layers instead of one good check?
+
+Classification, engine enforcement, and the approval boundary are independent.
+The classifier is the only one that can be subtly wrong — it is heuristic by
+construction — so it is the one that gets a second layer under it. Reads run on
+a `query_only(1)` connection, which means a misclassified write does not execute;
+it hits SQLite's refusal instead. Both have to fail together for a write to land
+on the read path.
+
+The approval boundary is not a third check on the same thing. It answers a
+different question: not *is this statement a write* but *may this write happen
+at all*, and that is not a question a server can answer alone.
+
+### Why `O_EXCL` and not a mutex?
+
+Because the racing parties are separate programs. `sqlguard serve` and
+`sqlguard approve` are different processes, so a `sync.Mutex` in one is invisible
+to the other. `os.OpenFile(..., O_CREATE|O_EXCL)` is a kernel-level
+test-and-set: exactly one creator wins, across processes.
+
+This is worth reading the test for, because the first version of it was wrong.
+It raced sixteen goroutines through a single `Store` — and they all queued
+behind that store's mutex, so a plain `if req.Redeemed()` check passed cleanly.
+The test proved the mutex worked while claiming to prove something else. Racing
+sixteen *independent* `Store` values over one directory is what two programs
+look like; without `O_EXCL`, nine of them redeem the same approval.
+
+### Why does every refusal carry a next step?
+
+A refusal an agent cannot act on gets retried verbatim, which is how a guardrail
+turns into a loop. `query` on a write does not just say no — it names
+`request_write_approval` and says a human has to grant it. `execute_approved_write`
+distinguishes *not approved yet* (wait) from *statement does not match* (ask for
+a new one) from *already used* (ask for a new one), because those need different
+behaviour and an agent given one generic error will pick wrong.
+
+### How do you know the tests test anything?
+
+By deleting the code they protect and checking they fail. That habit found two
+real problems here.
+
+The concurrency test above is one. The other was `splitSQL`, which carried a
+comment asserting that `sample.sql` contains no semicolon inside a string
+literal — true, unenforced, and one edit away from silently cutting a statement
+in half. A comment cannot hold an invariant, so it became a test.
+
+The end-to-end suite exists for the same reason, and it earned its keep
+immediately: it caught that `sqlguard approve <token> --approvals dir` silently
+ignored the flag and looked in the default directory. Go's `flag` package stops
+parsing at the first non-flag argument. Nothing that called the handlers
+directly would ever have seen it — only starting the real binary as a
+subprocess did.
+
 ## Why this exists
 
 I had already built an MCP server that handed an agent a local shell. Writing
