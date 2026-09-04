@@ -1,0 +1,7 @@
+bin/
+*.db
+*.db-shm
+*.db-wal
+audit.jsonl
+approvals/
+.DS_Store
