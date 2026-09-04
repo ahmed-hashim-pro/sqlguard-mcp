@@ -267,10 +267,12 @@ func runSeed(args []string) error {
 	return nil
 }
 
-// splitSQL breaks the embedded schema into statements. It is deliberately
-// simple — it only ever runs against the file compiled in above, which contains
-// no semicolons inside literals. Statements arriving from an agent go through
-// internal/policy instead, which does not make that assumption.
+// splitSQL breaks the embedded schema into statements by splitting on ";".
+//
+// That is only correct because sample.sql contains no semicolon inside a string
+// literal, which TestSampleSQLHasNoSemicolonsInLiterals enforces — the file is
+// editable, so the assumption needs a test rather than a comment. Statements
+// arriving from an agent go through internal/policy, which assumes nothing.
 func splitSQL(script string) []string {
 	var statements []string
 	for _, chunk := range strings.Split(script, ";") {

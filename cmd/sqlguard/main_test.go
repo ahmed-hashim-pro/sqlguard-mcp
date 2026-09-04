@@ -248,3 +248,36 @@ func TestFlagsParseOnEitherSideOfThePositional(t *testing.T) {
 		}
 	})
 }
+
+// splitSQL splits the embedded schema on ";", which is only safe while
+// sample.sql keeps no semicolon inside a string literal. The file is editable,
+// so the assumption is pinned here rather than asserted in a comment.
+func TestSampleSQLHasNoSemicolonsInLiterals(t *testing.T) {
+	inLiteral := false
+	for i, r := range sampleSQL {
+		switch {
+		case r == '\'':
+			inLiteral = !inLiteral
+		case r == ';' && inLiteral:
+			t.Fatalf("sample.sql has a semicolon inside a string literal at byte %d; "+
+				"splitSQL would cut the statement in half", i)
+		}
+	}
+	if inLiteral {
+		t.Error("sample.sql has an unclosed string literal")
+	}
+}
+
+func TestSplitSQLYieldsEveryStatement(t *testing.T) {
+	statements := splitSQL(sampleSQL)
+
+	// 3 CREATE TABLE + 3 INSERT
+	if len(statements) != 6 {
+		t.Errorf("splitSQL produced %d statements, want 6", len(statements))
+	}
+	for i, s := range statements {
+		if strings.TrimSpace(s) == "" {
+			t.Errorf("statement %d is blank", i)
+		}
+	}
+}
