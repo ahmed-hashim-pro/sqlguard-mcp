@@ -191,7 +191,7 @@ this module can import these packages.
 
 ## Tests
 
-127 tests, no database server and no credentials required.
+138 tests, no database server and no credentials required.
 
 ```bash
 make check      # go vet, gofmt -l, go test -race ./...
