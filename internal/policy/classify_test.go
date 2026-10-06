@@ -42,6 +42,9 @@ func TestClassify(t *testing.T) {
 		// anything keying on the first word calls it a read. It is a write.
 		{"a write hidden in a CTE",
 			"WITH gone AS (DELETE FROM orders RETURNING *) SELECT * FROM gone", KindWrite},
+		// The same trick in the form SQLite accepts: a CTE prefixing a write.
+		{"a write behind a CTE prefix",
+			"WITH recent AS (SELECT 1) DELETE FROM orders", KindWrite},
 		{"explain of a write is still a write", "EXPLAIN DELETE FROM orders", KindWrite},
 
 		// DDL.

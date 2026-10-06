@@ -75,11 +75,13 @@ So a statement is a read only when it **starts** like one *and* contains no
 write or DDL keyword. That ordering is the whole point:
 
 ```sql
-WITH gone AS (DELETE FROM orders RETURNING *) SELECT * FROM gone
+WITH recent AS (SELECT 1) DELETE FROM orders
 ```
 
-That begins with `WITH` and would pass any check keyed on the first word. It
-deletes every row. Keywords are matched against bare words from a scan that
+That begins with `WITH` and would pass any check keyed on the first word. It is
+valid SQLite, and once approved it deletes every row. (PostgreSQL also accepts a
+write inside the CTE itself, as in `WITH gone AS (DELETE ... RETURNING *)`.
+SQLite rejects that form as a syntax error, and the classifier refuses both.) Keywords are matched against bare words from a scan that
 skips quoted sections, so `SELECT 'DELETE FROM orders'` is a read — the verb is
 data — and `deleted_at` is one identifier rather than a verb.
 
@@ -191,7 +193,7 @@ this module can import these packages.
 
 ## Tests
 
-138 tests, no database server and no credentials required.
+139 tests, no database server and no credentials required.
 
 ```bash
 make check      # go vet, gofmt -l, go test -race ./...
@@ -250,8 +252,9 @@ Both the plain manifests and the chart are kept: the manifests are the readable
 reference, the chart is what `make deploy` installs. CI renders and deploys the
 chart, so that is the one proven to work.
 
-**The image is 60 MB and has no shell.** `CGO_ENABLED=0` makes that possible —
-the SQLite driver is pure Go, so the binary needs no libc and the final stage
+**The image is about 33 MB and has no shell.** That is the uncompressed size
+`docker image ls` reports for a local build; it moves with the base image.
+`CGO_ENABLED=0` makes it possible: the SQLite driver is pure Go, so the binary needs no libc and the final stage
 can be `distroless`. A process compromised in this container has nothing to
 spawn.
 
@@ -281,8 +284,11 @@ run leaves an existing file untouched.
 
 **Requests and limits do different jobs.** Requests are what the scheduler packs
 against; limits are what the kernel enforces. Memory limit equals memory request
-here, which puts the pod in Guaranteed QoS so it is not first to be evicted when
-the node is under pressure.
+here, so the pod can never use more memory than it asked for, and the pods the
+kubelet evicts first under memory pressure are the ones using more than they
+requested. CPU is allowed to burst (50m requested, 500m limit), so the QoS class
+is Burstable, not Guaranteed. Guaranteed would need CPU request to equal CPU
+limit, in the init container as well as the server.
 
 **The Service is `ClusterIP`.** Reachable from inside the cluster only —
 exposing a database gateway to the internet would undo the point of the
@@ -347,7 +353,9 @@ It raced sixteen goroutines through a single `Store` — and they all queued
 behind that store's mutex, so a plain `if req.Redeemed()` check passed cleanly.
 The test proved the mutex worked while claiming to prove something else. Racing
 sixteen *independent* `Store` values over one directory is what two programs
-look like; without `O_EXCL`, nine of them redeem the same approval.
+look like. Without `O_EXCL` the test fails on every run, but how many redeem the
+same approval varies by machine: between 3 and 12 of the sixteen across 60 runs
+on one, all sixteen in each of 120 runs on another.
 
 ### Why does every refusal carry a next step?
 

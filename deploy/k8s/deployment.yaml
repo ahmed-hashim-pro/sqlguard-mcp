@@ -98,8 +98,9 @@ spec:
 
           resources:
             # Requests are what the scheduler packs against; limits are what the
-            # kernel enforces. Memory limit == request so the pod is Guaranteed
-            # QoS and is not the first thing evicted under pressure.
+            # kernel enforces. Memory limit == request so memory use never
+            # exceeds the request and the pod is not among the first evicted
+            # under memory pressure. CPU still bursts, so QoS is Burstable.
             requests: { cpu: 50m,  memory: 128Mi }
             limits:   { cpu: 500m, memory: 128Mi }
 
